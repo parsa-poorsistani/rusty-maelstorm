@@ -1,6 +1,6 @@
-use std::io::{StdoutLock, Write};
+use std::io::StdoutLock;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
