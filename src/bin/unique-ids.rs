@@ -1,5 +1,9 @@
 use ::rtrom::*;
-use std::io::{StdoutLock, Write};
+use core::panic;
+use std::{
+    io::{StdoutLock, Write},
+    sync::mpsc::Sender,
+};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -20,8 +24,8 @@ struct UniqueNode {
     node_id: String,
 }
 
-impl Node<(), Payload> for UniqueNode {
-    fn from_init(_state: (), init: Init) -> anyhow::Result<Self>
+impl Node<(), Payload, ()> for UniqueNode {
+    fn from_init(_state: (), init: Init, _tx: Sender<Event<Payload>>) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
@@ -30,7 +34,10 @@ impl Node<(), Payload> for UniqueNode {
             msg_id: 1,
         })
     }
-    fn handle(&mut self, input: Message<Payload>, output: &mut StdoutLock) -> anyhow::Result<()> {
+    fn handle(&mut self, input: Event<Payload>, output: &mut StdoutLock) -> anyhow::Result<()> {
+        let Event::Message(input) = input else {
+            panic!("got injected an event");
+        };
         match input.body.payload {
             Payload::Generate { .. } => {
                 let guid = format!("{}-{}", self.node_id, self.msg_id);
@@ -55,5 +62,5 @@ impl Node<(), Payload> for UniqueNode {
 }
 
 pub fn main() -> Result<()> {
-    main_loop::<_, UniqueNode, _>(())
+    main_loop::<_, UniqueNode, _, _>(())
 }

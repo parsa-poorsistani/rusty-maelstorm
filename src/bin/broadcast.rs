@@ -1,7 +1,10 @@
 use ::rtrom::*;
+use core::panic;
 use std::{
-    collections::HashMap,
-    io::{StdoutLock, Write},
+    collections::{HashMap, HashSet},
+    io::StdoutLock,
+    time::Duration,
+    usize,
 };
 
 use anyhow::{Context, Result};
@@ -17,63 +20,129 @@ enum Payload {
     BroadcastOk,
     Read,
     ReadOk {
-        messages: Vec<usize>,
+        messages: HashSet<usize>,
     },
     Topology {
         topology: HashMap<String, Vec<String>>,
     },
     TopologyOk,
+    Gossip {
+        seen: HashSet<usize>,
+    },
+}
+
+enum InjectedPayload {
+    Gossip,
 }
 
 struct BroadcastNode {
     msg_id: usize,
     node_id: String,
-    messages: Vec<usize>,
+    messages: HashSet<usize>,
+    //this is for keeping the values that we know, other nodes know
+    known: HashMap<String, HashSet<usize>>,
+    neighbour: Vec<String>,
 }
 
-impl Node<(), Payload> for BroadcastNode {
-    fn from_init(_state: (), init: Init) -> anyhow::Result<Self>
+impl Node<(), Payload, InjectedPayload> for BroadcastNode {
+    fn from_init(
+        _state: (),
+        init: Init,
+        tx: std::sync::mpsc::Sender<Event<Payload, InjectedPayload>>,
+    ) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
+        std::thread::spawn(move || {
+            // generate gossip events
+            // TODO: handle EOF signal
+            loop {
+                std::thread::sleep(Duration::from_millis(300));
+                if let Err(_) = tx.send(Event::Injected(InjectedPayload::Gossip)) {
+                    break;
+                };
+            }
+        });
+
         Ok(BroadcastNode {
             node_id: init.node_id,
             msg_id: 1,
-            messages: Vec::new(),
+            messages: HashSet::new(),
+            known: init
+                .node_ids
+                .into_iter()
+                .map(|nid| (nid, HashSet::new()))
+                .collect(),
+            neighbour: Vec::new(),
         })
     }
-    fn handle(&mut self, input: Message<Payload>, output: &mut StdoutLock) -> anyhow::Result<()> {
-        let mut reply = input.into_reply(Some(&mut self.msg_id));
-        match reply.body.payload {
-            Payload::Broadcast { message } => {
-                reply.body.payload = Payload::BroadcastOk;
-                self.messages.push(message);
-                serde_json::to_writer(&mut *output, &reply)
-                    .context("serialize response to broadcast")?;
-                output.write_all(b"\n").context("failed to write")?;
+
+    fn handle(
+        &mut self,
+        input: Event<Payload, InjectedPayload>,
+        output: &mut StdoutLock,
+    ) -> anyhow::Result<()> {
+        match input {
+            Event::EOF => {}
+            Event::Injected(payload) => match payload {
+                InjectedPayload::Gossip => {
+                    for n in &self.neighbour {
+                        let known_to_n = &self.known[n];
+                        Message {
+                            src: self.node_id.clone(),
+                            dst: n.clone(),
+                            body: Body {
+                                id: None,
+                                in_reply_to: None,
+                                payload: Payload::Gossip {
+                                    seen: self
+                                        .messages
+                                        .iter()
+                                        .copied()
+                                        .filter(|m| !known_to_n.contains(m))
+                                        .collect(),
+                                },
+                            },
+                        }
+                        .send(&mut *output)
+                        .with_context(|| format!("gossip to {}", n))?;
+                    }
+                }
+            },
+            Event::Message(input) => {
+                let mut reply = input.into_reply(Some(&mut self.msg_id));
+                match reply.body.payload {
+                    Payload::Gossip { seen } => {
+                        self.messages.extend(seen);
+                    }
+                    Payload::Broadcast { message } => {
+                        reply.body.payload = Payload::BroadcastOk;
+                        self.messages.insert(message);
+                        reply.send(&mut *output).context("reply to broadcast")?;
+                    }
+                    Payload::Read => {
+                        reply.body.payload = Payload::ReadOk {
+                            messages: self.messages.clone(),
+                        };
+                        reply.send(&mut *output).context("reply to read")?;
+                    }
+                    Payload::Topology { mut topology } => {
+                        self.neighbour = topology.remove(&self.node_id).unwrap_or_else(|| {
+                            panic!("no topolgy given for node {:?}", self.node_id)
+                        });
+                        reply.body.payload = Payload::TopologyOk;
+                        reply.send(&mut *output).context("reply to topology")?;
+                    }
+                    Payload::ReadOk { .. } => {}
+                    Payload::TopologyOk => {}
+                    Payload::BroadcastOk => {}
+                }
             }
-            Payload::Read => {
-                reply.body.payload = Payload::ReadOk {
-                    messages: self.messages.to_vec(),
-                };
-                serde_json::to_writer(&mut *output, &reply)
-                    .context("serialize response to read")?;
-                output.write_all(b"\n").context("failed to write")?;
-            }
-            Payload::Topology { topology: _ } => {
-                reply.body.payload = Payload::TopologyOk;
-                serde_json::to_writer(&mut *output, &reply)
-                    .context("serialize response to topology")?;
-                output.write_all(b"\n").context("failed to write")?;
-            }
-            Payload::ReadOk { .. } => {}
-            Payload::TopologyOk => {}
-            Payload::BroadcastOk => {}
         }
         Ok(())
     }
 }
 
 pub fn main() -> Result<()> {
-    main_loop::<_, BroadcastNode, _>(())
+    main_loop::<_, BroadcastNode, _, _>(())
 }

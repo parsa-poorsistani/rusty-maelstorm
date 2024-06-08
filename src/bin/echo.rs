@@ -1,5 +1,9 @@
 use ::rtrom::*;
-use std::io::{StdoutLock, Write};
+use core::panic;
+use std::{
+    io::{StdoutLock, Write},
+    sync::mpsc::Sender,
+};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -16,15 +20,19 @@ struct EchoNode {
     pub id: usize,
 }
 
-impl Node<(), Payload> for EchoNode {
-    fn from_init(_state: (), _init: Init) -> anyhow::Result<Self>
+impl Node<(), Payload, ()> for EchoNode {
+    fn from_init(_state: (), _init: Init, _tx: Sender<Event<Payload>>) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
         Ok(EchoNode { id: 1 })
     }
 
-    fn handle(&mut self, input: Message<Payload>, output: &mut StdoutLock) -> anyhow::Result<()> {
+    fn handle(&mut self, input: Event<Payload>, output: &mut StdoutLock) -> anyhow::Result<()> {
+        let Event::Message(input) = input else {
+            panic!("got injected an event");
+        };
+
         match input.body.payload {
             Payload::Echo { echo } => {
                 let reply = Message {
@@ -48,5 +56,5 @@ impl Node<(), Payload> for EchoNode {
 }
 
 pub fn main() -> Result<()> {
-    main_loop::<_, EchoNode, _>(())
+    main_loop::<_, EchoNode, _, _>(())
 }
