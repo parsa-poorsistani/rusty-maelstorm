@@ -87,6 +87,7 @@ impl Node<(), Payload, InjectedPayload> for BroadcastNode {
             Event::Injected(payload) => match payload {
                 InjectedPayload::Gossip => {
                     for n in &self.neighbour {
+                        // can optimize this gossiping
                         let known_to_n = &self.known[n];
                         Message {
                             src: self.node_id.clone(),
