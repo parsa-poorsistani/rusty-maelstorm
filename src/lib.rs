@@ -12,6 +12,7 @@ pub enum Event<Payload, InjectedPayload = ()> {
     Injected(InjectedPayload),
     EOF,
 }
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Message<Payload> {
     pub src: String,
